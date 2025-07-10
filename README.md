@@ -18,6 +18,7 @@ Backend per la gestione delle notifiche push per l'applicazione Giardino.
 - `GET /subscriptions` - Visualizza tutte le subscription attuali
 - `POST /subscribe` - Registra una nuova subscription push
 - `DELETE /unsubscribe` - Rimuove una subscription
+- `POST /sendNotification` - Invia una notifica manuale (per test)
 
 ## Deployment su Render
 

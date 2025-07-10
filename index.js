@@ -97,6 +97,38 @@ app.delete('/unsubscribe', (req, res) => {
   }
 });
 
+// Endpoint per inviare notifiche manuali (per test)
+app.post('/sendNotification', (req, res) => {
+  try {
+    const { title, body } = req.body;
+    
+    if (!title || !body) {
+      return res.status(400).json({ error: 'Title e body sono richiesti' });
+    }
+    
+    const promises = subscriptions.map(sub => 
+      webpush.sendNotification(sub, JSON.stringify({ title, body }))
+        .catch(err => {
+          if (err.statusCode === 410 || err.statusCode === 404) {
+            console.log('Subscription scaduta, rimuovendo...');
+            subscriptions = subscriptions.filter(s => s.endpoint !== sub.endpoint);
+            saveSubscriptions();
+          } else {
+            console.error('Errore nell\'invio della notifica:', err);
+          }
+        })
+    );
+    
+    Promise.all(promises).then(() => {
+      console.log('Notifica manuale inviata:', title, body);
+      res.status(200).json({ message: 'Notifica inviata con successo', title, body });
+    });
+  } catch (error) {
+    console.error('Errore nell\'invio della notifica manuale:', error);
+    res.status(500).json({ error: 'Errore interno del server' });
+  }
+});
+
 const MQTT_BROKER = 'mqtt://test.mosquitto.org';
 const MQTT_TOPIC = 'giardino/stato';
 
@@ -124,11 +156,11 @@ mqttClient.on('message', (topic, message) => {
       const data = JSON.parse(message.toString());
       let title, body;
       if (data.stato === 'occupato') {
-        title = 'Giardino occupato';
-        body = `Occupato da ${data.famiglia} dal ${new Date(data.timestamp).toLocaleString()}`;
+        title = '🚫 Giardino Occupato!';
+        body = `Il giardino è stato occupato da ${data.famiglia} alle ${new Date(data.timestamp).toLocaleTimeString('it-IT')}`;
       } else {
-        title = 'Giardino libero';
-        body = `Liberato da ${data.famiglia} il ${new Date(data.timestamp).toLocaleString()}`;
+        title = '✅ Giardino Libero!';
+        body = `Il giardino è stato liberato da ${data.famiglia} alle ${new Date(data.timestamp).toLocaleTimeString('it-IT')}`;
       }
       
       const promises = subscriptions.map(sub => 
