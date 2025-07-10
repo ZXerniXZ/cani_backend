@@ -28,21 +28,41 @@ app.get('/vapidPublicKey', (req, res) => {
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
+// Endpoint per visualizzare le subscription attuali
+app.get('/subscriptions', (req, res) => {
+  res.json({ 
+    count: subscriptions.length,
+    subscriptions: subscriptions 
+  });
+});
+
 const SUBSCRIPTIONS_FILE = './subscriptions.json';
 
 let subscriptions = [];
 if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
   try {
     subscriptions = JSON.parse(fs.readFileSync(SUBSCRIPTIONS_FILE));
+    console.log('=== SUBSCRIPTIONS.JSON CARICATO ===');
+    console.log('Contenuto iniziale:');
+    console.log(JSON.stringify(subscriptions, null, 2));
+    console.log('===================================');
   } catch (error) {
     console.error('Errore nel caricamento delle sottoscrizioni:', error);
     subscriptions = [];
   }
+} else {
+  console.log('=== SUBSCRIPTIONS.JSON NON TROVATO ===');
+  console.log('Creazione nuovo file subscriptions.json');
+  console.log('=======================================');
 }
 
 function saveSubscriptions() {
   try {
     fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(subscriptions, null, 2));
+    console.log('=== SUBSCRIPTIONS.JSON AGGIORNATO ===');
+    console.log('Contenuto attuale:');
+    console.log(JSON.stringify(subscriptions, null, 2));
+    console.log('=====================================');
   } catch (error) {
     console.error('Errore nel salvataggio delle sottoscrizioni:', error);
   }

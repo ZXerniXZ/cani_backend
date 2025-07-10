@@ -15,6 +15,7 @@ Backend per la gestione delle notifiche push per l'applicazione Giardino.
 
 - `GET /health` - Health check per verificare lo stato del server
 - `GET /vapidPublicKey` - Ottiene la chiave pubblica VAPID
+- `GET /subscriptions` - Visualizza tutte le subscription attuali
 - `POST /subscribe` - Registra una nuova subscription push
 - `DELETE /unsubscribe` - Rimuove una subscription
 
