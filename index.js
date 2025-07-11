@@ -5,12 +5,15 @@ import webpush from 'web-push';
 import mqtt from 'mqtt';
 import mongoose from 'mongoose';
 import Subscription from './subscription.model.js';
+import dotenv from 'dotenv';
+dotenv.config();
 
-const VAPID_PUBLIC_KEY = 'BB8l__PCTsH5Xb1gaDl5pAO-XyrUJOCtD8JdJYyJhCxVacLalgk4dnWyHYkp3_q6yT8KVT4N2C3ziwGOA6tUcRQ';
-const VAPID_PRIVATE_KEY = 'VnYONU0T2FAKAl3zHXeo2yZpjffzggoABinzANlt9lQ';
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+const VAPID_EMAIL = process.env.VAPID_EMAIL || 'mailto:tuamail@example.com';
 
 webpush.setVapidDetails(
-  'mailto:tuamail@example.com',
+  VAPID_EMAIL,
   VAPID_PUBLIC_KEY,
   VAPID_PRIVATE_KEY
 );
@@ -20,7 +23,7 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // Connetti a MongoDB Atlas
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://cani_user:cani_passwrod_7030@canidb.kurd9ld.mongodb.net/?retryWrites=true&w=majority&appName=caniDB';
+const MONGODB_URI = process.env.MONGODB_URI;
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
