@@ -68,17 +68,43 @@ function saveSubscriptions() {
   }
 }
 
+// Funzione per pulire subscription non valide
+function cleanInvalidSubscription(endpoint, errorCode, reason) {
+  const timestamp = new Date().toISOString();
+  const initialCount = subscriptions.length;
+  
+  subscriptions = subscriptions.filter(s => s.endpoint !== endpoint);
+  const finalCount = subscriptions.length;
+  
+  if (initialCount > finalCount) {
+    saveSubscriptions();
+    console.log(`[${timestamp}] 🧹 SUBSCRIPTION NON VALIDA RIMOSSA`);
+    console.log(`   Endpoint: ${endpoint.substring(0, 50)}...`);
+    console.log(`   Codice errore: ${errorCode}`);
+    console.log(`   Motivo: ${reason}`);
+    console.log(`   Totale rimanenti: ${finalCount}`);
+  }
+}
+
 app.post('/subscribe', (req, res) => {
   try {
     const sub = req.body;
+    const timestamp = new Date().toISOString();
+    
     if (!subscriptions.find(s => s.endpoint === sub.endpoint)) {
       subscriptions.push(sub);
       saveSubscriptions();
-      console.log('Nuova subscription registrata');
+      console.log(`[${timestamp}] ✅ NUOVA SUBSCRIPTION REGISTRATA`);
+      console.log(`   Endpoint: ${sub.endpoint.substring(0, 50)}...`);
+      console.log(`   Totale subscription: ${subscriptions.length}`);
+    } else {
+      console.log(`[${timestamp}] ℹ️ SUBSCRIPTION GIÀ ESISTENTE`);
+      console.log(`   Endpoint: ${sub.endpoint.substring(0, 50)}...`);
     }
     res.status(201).json({ message: 'Subscription registrata con successo' });
   } catch (error) {
-    console.error('Errore nella registrazione della subscription:', error);
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ❌ ERRORE REGISTRAZIONE SUBSCRIPTION:`, error);
     res.status(500).json({ error: 'Errore interno del server' });
   }
 });
@@ -87,12 +113,27 @@ app.post('/subscribe', (req, res) => {
 app.delete('/unsubscribe', (req, res) => {
   try {
     const { endpoint } = req.body;
+    const timestamp = new Date().toISOString();
+    
+    const initialCount = subscriptions.length;
     subscriptions = subscriptions.filter(s => s.endpoint !== endpoint);
-    saveSubscriptions();
-    console.log('Subscription rimossa');
-    res.status(200).json({ message: 'Subscription rimossa con successo' });
+    const finalCount = subscriptions.length;
+    
+    if (initialCount > finalCount) {
+      saveSubscriptions();
+      console.log(`[${timestamp}] 🗑️ SUBSCRIPTION RIMOSSA`);
+      console.log(`   Endpoint: ${endpoint.substring(0, 50)}...`);
+      console.log(`   Subscription rimosse: ${initialCount - finalCount}`);
+      console.log(`   Totale rimanenti: ${finalCount}`);
+      res.status(200).json({ message: 'Subscription rimossa con successo' });
+    } else {
+      console.log(`[${timestamp}] ⚠️ SUBSCRIPTION NON TROVATA`);
+      console.log(`   Endpoint: ${endpoint.substring(0, 50)}...`);
+      res.status(404).json({ error: 'Subscription non trovata' });
+    }
   } catch (error) {
-    console.error('Errore nella rimozione della subscription:', error);
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ❌ ERRORE RIMOZIONE SUBSCRIPTION:`, error);
     res.status(500).json({ error: 'Errore interno del server' });
   }
 });
@@ -109,12 +150,15 @@ app.post('/sendNotification', (req, res) => {
     const promises = subscriptions.map(sub => 
       webpush.sendNotification(sub, JSON.stringify({ title, body }))
         .catch(err => {
-          if (err.statusCode === 410 || err.statusCode === 404) {
-            console.log('Subscription scaduta, rimuovendo...');
-            subscriptions = subscriptions.filter(s => s.endpoint !== sub.endpoint);
-            saveSubscriptions();
+          if (err.statusCode === 410) {
+            cleanInvalidSubscription(sub.endpoint, 410, 'Subscription scaduta (Gone)');
+          } else if (err.statusCode === 404) {
+            cleanInvalidSubscription(sub.endpoint, 404, 'Endpoint non trovato');
           } else {
-            console.error('Errore nell\'invio della notifica:', err);
+            const timestamp = new Date().toISOString();
+            console.error(`[${timestamp}] ❌ ERRORE INVIO NOTIFICA:`, err);
+            console.log(`   Endpoint: ${sub.endpoint.substring(0, 50)}...`);
+            console.log(`   Codice errore: ${err.statusCode}`);
           }
         })
     );
@@ -166,18 +210,27 @@ mqttClient.on('message', (topic, message) => {
       const promises = subscriptions.map(sub => 
         webpush.sendNotification(sub, JSON.stringify({ title, body }))
           .catch(err => {
-            if (err.statusCode === 410 || err.statusCode === 404) {
-              console.log('Subscription scaduta, rimuovendo...');
-              subscriptions = subscriptions.filter(s => s.endpoint !== sub.endpoint);
-              saveSubscriptions();
+            if (err.statusCode === 410) {
+              cleanInvalidSubscription(sub.endpoint, 410, 'Subscription scaduta (Gone)');
+            } else if (err.statusCode === 404) {
+              cleanInvalidSubscription(sub.endpoint, 404, 'Endpoint non trovato');
             } else {
-              console.error('Errore nell\'invio della notifica:', err);
+              const timestamp = new Date().toISOString();
+              console.error(`[${timestamp}] ❌ ERRORE INVIO NOTIFICA MQTT:`, err);
+              console.log(`   Endpoint: ${sub.endpoint.substring(0, 50)}...`);
+              console.log(`   Codice errore: ${err.statusCode}`);
             }
           })
       );
       
       Promise.all(promises).then(() => {
-        console.log('Notifica inviata a tutte le subscription:', title, body);
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] 📢 NOTIFICA MQTT INVIATA`);
+        console.log(`   Titolo: ${title}`);
+        console.log(`   Messaggio: ${body}`);
+        console.log(`   Destinatari: ${subscriptions.length} subscription`);
+        console.log(`   Stato giardino: ${data.stato}`);
+        console.log(`   Famiglia: ${data.famiglia}`);
       });
     } catch (error) {
       console.error('Errore nel processing del messaggio MQTT:', error);
