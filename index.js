@@ -191,10 +191,10 @@ mqttClient.on('message', async (topic, message) => {
       let title, body;
       if (data.stato === 'occupato') {
         title = '🚫 Giardino Occupato!';
-        body = `Il giardino è stato occupato da ${data.famiglia} alle ${new Date(data.timestamp).toLocaleTimeString('it-IT')}`;
+        body = `Il giardino è stato occupato da ${data.famiglia} alle ${new Date(data.timestamp).toLocaleTimeString('it-IT', { timeZone: 'Europe/Rome' })}`;
       } else {
         title = '✅ Giardino Libero!';
-        body = `Il giardino è stato liberato da ${data.famiglia} alle ${new Date(data.timestamp).toLocaleTimeString('it-IT')}`;
+        body = `Il giardino è stato liberato da ${data.famiglia} alle ${new Date(data.timestamp).toLocaleTimeString('it-IT', { timeZone: 'Europe/Rome' })}`;
       }
       const subs = await Subscription.find();
       const promises = subs.map(sub => 
