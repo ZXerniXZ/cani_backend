@@ -173,10 +173,21 @@ mqttClient.on('close', () => {
   console.log('Connessione MQTT chiusa');
 });
 
+// Variabile per memorizzare l'ultimo payload MQTT ricevuto
+let lastMqttPayload = null;
+
 mqttClient.on('message', async (topic, message) => {
   if (topic === MQTT_TOPIC) {
     try {
       const data = JSON.parse(message.toString());
+      // Confronta il payload attuale con quello precedente
+      const currentPayload = JSON.stringify(data);
+      if (lastMqttPayload === currentPayload) {
+        // Se il payload è uguale al precedente, non inviare la notifica
+        return;
+      }
+      // Aggiorna il payload precedente
+      lastMqttPayload = currentPayload;
       let title, body;
       if (data.stato === 'occupato') {
         title = '🚫 Giardino Occupato!';
