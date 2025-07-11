@@ -151,8 +151,9 @@ app.post('/sendNotification', async (req, res) => {
   }
 });
 
-const MQTT_BROKER = 'mqtt://test.mosquitto.org';
-const MQTT_TOPIC = 'giardino/stato';
+// Configurazione MQTT tramite variabili d'ambiente
+const MQTT_BROKER = process.env.MQTT_BROKER_URL || 'wss://test.mosquitto.org:8081';
+const MQTT_TOPIC = process.env.MQTT_TOPIC || 'giardino/stato';
 
 const mqttClient = mqtt.connect(MQTT_BROKER, {
   reconnectPeriod: 5000,
