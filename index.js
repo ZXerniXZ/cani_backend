@@ -3,7 +3,8 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 import webpush from 'web-push';
 import mqtt from 'mqtt';
-import fs from 'fs';
+import mongoose from 'mongoose';
+import Subscription from './subscription.model.js';
 
 const VAPID_PUBLIC_KEY = 'BB8l__PCTsH5Xb1gaDl5pAO-XyrUJOCtD8JdJYyJhCxVacLalgk4dnWyHYkp3_q6yT8KVT4N2C3ziwGOA6tUcRQ';
 const VAPID_PRIVATE_KEY = 'VnYONU0T2FAKAl3zHXeo2yZpjffzggoABinzANlt9lQ';
@@ -18,6 +19,17 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// Connetti a MongoDB Atlas
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://cani_user:cani_passwrod_7030@canidb.kurd9ld.mongodb.net/?retryWrites=true&w=majority&appName=caniDB';
+mongoose.connect(MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+}).then(() => {
+  console.log('✅ Connesso a MongoDB Atlas');
+}).catch(err => {
+  console.error('❌ Errore connessione MongoDB:', err);
+});
+
 // Health check endpoint per Render
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Push server is running' });
@@ -29,74 +41,26 @@ app.get('/vapidPublicKey', (req, res) => {
 });
 
 // Endpoint per visualizzare le subscription attuali
-app.get('/subscriptions', (req, res) => {
+app.get('/subscriptions', async (req, res) => {
+  const subs = await Subscription.find();
   res.json({ 
-    count: subscriptions.length,
-    subscriptions: subscriptions 
+    count: subs.length,
+    subscriptions: subs 
   });
 });
 
-const SUBSCRIPTIONS_FILE = './subscriptions.json';
-
-let subscriptions = [];
-if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
-  try {
-    subscriptions = JSON.parse(fs.readFileSync(SUBSCRIPTIONS_FILE));
-    console.log('=== SUBSCRIPTIONS.JSON CARICATO ===');
-    console.log('Contenuto iniziale:');
-    console.log(JSON.stringify(subscriptions, null, 2));
-    console.log('===================================');
-  } catch (error) {
-    console.error('Errore nel caricamento delle sottoscrizioni:', error);
-    subscriptions = [];
-  }
-} else {
-  console.log('=== SUBSCRIPTIONS.JSON NON TROVATO ===');
-  console.log('Creazione nuovo file subscriptions.json');
-  console.log('=======================================');
-}
-
-function saveSubscriptions() {
-  try {
-    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(subscriptions, null, 2));
-    console.log('=== SUBSCRIPTIONS.JSON AGGIORNATO ===');
-    console.log('Contenuto attuale:');
-    console.log(JSON.stringify(subscriptions, null, 2));
-    console.log('=====================================');
-  } catch (error) {
-    console.error('Errore nel salvataggio delle sottoscrizioni:', error);
-  }
-}
-
-// Funzione per pulire subscription non valide
-function cleanInvalidSubscription(endpoint, errorCode, reason) {
-  const timestamp = new Date().toISOString();
-  const initialCount = subscriptions.length;
-  
-  subscriptions = subscriptions.filter(s => s.endpoint !== endpoint);
-  const finalCount = subscriptions.length;
-  
-  if (initialCount > finalCount) {
-    saveSubscriptions();
-    console.log(`[${timestamp}] 🧹 SUBSCRIPTION NON VALIDA RIMOSSA`);
-    console.log(`   Endpoint: ${endpoint.substring(0, 50)}...`);
-    console.log(`   Codice errore: ${errorCode}`);
-    console.log(`   Motivo: ${reason}`);
-    console.log(`   Totale rimanenti: ${finalCount}`);
-  }
-}
-
-app.post('/subscribe', (req, res) => {
+// Endpoint per registrare una subscription
+app.post('/subscribe', async (req, res) => {
   try {
     const sub = req.body;
     const timestamp = new Date().toISOString();
-    
-    if (!subscriptions.find(s => s.endpoint === sub.endpoint)) {
-      subscriptions.push(sub);
-      saveSubscriptions();
+    const exists = await Subscription.findOne({ endpoint: sub.endpoint });
+    if (!exists) {
+      await Subscription.create(sub);
+      const count = await Subscription.countDocuments();
       console.log(`[${timestamp}] ✅ NUOVA SUBSCRIPTION REGISTRATA`);
       console.log(`   Endpoint: ${sub.endpoint.substring(0, 50)}...`);
-      console.log(`   Totale subscription: ${subscriptions.length}`);
+      console.log(`   Totale subscription: ${count}`);
     } else {
       console.log(`[${timestamp}] ℹ️ SUBSCRIPTION GIÀ ESISTENTE`);
       console.log(`   Endpoint: ${sub.endpoint.substring(0, 50)}...`);
@@ -110,21 +74,16 @@ app.post('/subscribe', (req, res) => {
 });
 
 // Endpoint per rimuovere una subscription
-app.delete('/unsubscribe', (req, res) => {
+app.delete('/unsubscribe', async (req, res) => {
   try {
     const { endpoint } = req.body;
     const timestamp = new Date().toISOString();
-    
-    const initialCount = subscriptions.length;
-    subscriptions = subscriptions.filter(s => s.endpoint !== endpoint);
-    const finalCount = subscriptions.length;
-    
-    if (initialCount > finalCount) {
-      saveSubscriptions();
+    const result = await Subscription.deleteOne({ endpoint });
+    const count = await Subscription.countDocuments();
+    if (result.deletedCount > 0) {
       console.log(`[${timestamp}] 🗑️ SUBSCRIPTION RIMOSSA`);
       console.log(`   Endpoint: ${endpoint.substring(0, 50)}...`);
-      console.log(`   Subscription rimosse: ${initialCount - finalCount}`);
-      console.log(`   Totale rimanenti: ${finalCount}`);
+      console.log(`   Totale rimanenti: ${count}`);
       res.status(200).json({ message: 'Subscription rimossa con successo' });
     } else {
       console.log(`[${timestamp}] ⚠️ SUBSCRIPTION NON TROVATA`);
@@ -138,16 +97,29 @@ app.delete('/unsubscribe', (req, res) => {
   }
 });
 
+// Funzione per pulire subscription non valide
+async function cleanInvalidSubscription(endpoint, errorCode, reason) {
+  const timestamp = new Date().toISOString();
+  const result = await Subscription.deleteOne({ endpoint });
+  const count = await Subscription.countDocuments();
+  if (result.deletedCount > 0) {
+    console.log(`[${timestamp}] 🧹 SUBSCRIPTION NON VALIDA RIMOSSA`);
+    console.log(`   Endpoint: ${endpoint.substring(0, 50)}...`);
+    console.log(`   Codice errore: ${errorCode}`);
+    console.log(`   Motivo: ${reason}`);
+    console.log(`   Totale rimanenti: ${count}`);
+  }
+}
+
 // Endpoint per inviare notifiche manuali (per test)
-app.post('/sendNotification', (req, res) => {
+app.post('/sendNotification', async (req, res) => {
   try {
     const { title, body } = req.body;
-    
     if (!title || !body) {
       return res.status(400).json({ error: 'Title e body sono richiesti' });
     }
-    
-    const promises = subscriptions.map(sub => 
+    const subs = await Subscription.find();
+    const promises = subs.map(sub => 
       webpush.sendNotification(sub, JSON.stringify({ title, body }))
         .catch(err => {
           if (err.statusCode === 410) {
@@ -162,13 +134,16 @@ app.post('/sendNotification', (req, res) => {
           }
         })
     );
-    
-    Promise.all(promises).then(() => {
-      console.log('Notifica manuale inviata:', title, body);
-      res.status(200).json({ message: 'Notifica inviata con successo', title, body });
-    });
+    await Promise.all(promises);
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] 📢 NOTIFICA MANUALE INVIATA`);
+    console.log(`   Titolo: ${title}`);
+    console.log(`   Messaggio: ${body}`);
+    console.log(`   Destinatari: ${subs.length} subscription`);
+    res.status(200).json({ message: 'Notifica inviata con successo', title, body });
   } catch (error) {
-    console.error('Errore nell\'invio della notifica manuale:', error);
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ❌ ERRORE INVIO NOTIFICA MANUALE:`, error);
     res.status(500).json({ error: 'Errore interno del server' });
   }
 });
@@ -194,7 +169,7 @@ mqttClient.on('close', () => {
   console.log('Connessione MQTT chiusa');
 });
 
-mqttClient.on('message', (topic, message) => {
+mqttClient.on('message', async (topic, message) => {
   if (topic === MQTT_TOPIC) {
     try {
       const data = JSON.parse(message.toString());
@@ -206,8 +181,8 @@ mqttClient.on('message', (topic, message) => {
         title = '✅ Giardino Libero!';
         body = `Il giardino è stato liberato da ${data.famiglia} alle ${new Date(data.timestamp).toLocaleTimeString('it-IT')}`;
       }
-      
-      const promises = subscriptions.map(sub => 
+      const subs = await Subscription.find();
+      const promises = subs.map(sub => 
         webpush.sendNotification(sub, JSON.stringify({ title, body }))
           .catch(err => {
             if (err.statusCode === 410) {
@@ -222,18 +197,17 @@ mqttClient.on('message', (topic, message) => {
             }
           })
       );
-      
-      Promise.all(promises).then(() => {
-        const timestamp = new Date().toISOString();
-        console.log(`[${timestamp}] 📢 NOTIFICA MQTT INVIATA`);
-        console.log(`   Titolo: ${title}`);
-        console.log(`   Messaggio: ${body}`);
-        console.log(`   Destinatari: ${subscriptions.length} subscription`);
-        console.log(`   Stato giardino: ${data.stato}`);
-        console.log(`   Famiglia: ${data.famiglia}`);
-      });
+      await Promise.all(promises);
+      const timestamp = new Date().toISOString();
+      console.log(`[${timestamp}] 📢 NOTIFICA MQTT INVIATA`);
+      console.log(`   Titolo: ${title}`);
+      console.log(`   Messaggio: ${body}`);
+      console.log(`   Destinatari: ${subs.length} subscription`);
+      console.log(`   Stato giardino: ${data.stato}`);
+      console.log(`   Famiglia: ${data.famiglia}`);
     } catch (error) {
-      console.error('Errore nel processing del messaggio MQTT:', error);
+      const timestamp = new Date().toISOString();
+      console.error(`[${timestamp}] ❌ ERRORE PROCESSING MESSAGGIO MQTT:`, error);
     }
   }
 });
