@@ -200,92 +200,6 @@ app.get('/prenotazioni/stats', async (req, res) => {
   }
 });
 
-// Endpoint per forzare l'aggiornamento dello stato (utile dopo riavvio)
-app.post('/forceStateUpdate', async (req, res) => {
-  try {
-    const { stato, famiglia, timestamp } = req.body;
-    
-    if (!stato || !famiglia) {
-      return res.status(400).json({ error: 'Stato e famiglia sono richiesti' });
-    }
-
-    // Resetta il payload precedente per forzare l'aggiornamento
-    lastMqttPayload = null;
-    
-    // Simula un messaggio MQTT
-    const mockData = {
-      stato,
-      famiglia,
-      timestamp: timestamp || new Date().toISOString()
-    };
-    
-    // Salva la prenotazione
-    let durata = null;
-    if (stato === 'libero') {
-      const ultimaOccupazione = await Prenotazione.findOne({
-        famiglia: famiglia,
-        stato: 'occupato'
-      }).sort({ timestamp: -1 });
-      
-      if (ultimaOccupazione) {
-        const oraAttuale = new Date(mockData.timestamp);
-        const oraOccupazione = new Date(ultimaOccupazione.timestamp);
-        durata = Math.round((oraAttuale - oraOccupazione) / (1000 * 60));
-      }
-    }
-
-    await Prenotazione.create({
-      timestamp: new Date(mockData.timestamp),
-      famiglia: famiglia,
-      stato: stato,
-      durata: durata
-    });
-
-    // Invia notifica
-    let title, body;
-    if (stato === 'occupato') {
-      title = '🚫 Giardino Occupato!';
-      body = `Il giardino è stato occupato da ${famiglia} alle ${new Date(mockData.timestamp).toLocaleTimeString('it-IT', { timeZone: 'Europe/Rome' })}`;
-    } else {
-      title = '✅ Giardino Libero!';
-      body = `Il giardino è stato liberato da ${famiglia} alle ${new Date(mockData.timestamp).toLocaleTimeString('it-IT', { timeZone: 'Europe/Rome' })}`;
-    }
-
-    const subs = await Subscription.find();
-    const promises = subs.map(sub => 
-      webpush.sendNotification(sub, JSON.stringify({ title, body }))
-        .catch(err => {
-          if (err.statusCode === 410) {
-            cleanInvalidSubscription(sub.endpoint, 410, 'Subscription scaduta (Gone)');
-          } else if (err.statusCode === 404) {
-            cleanInvalidSubscription(sub.endpoint, 404, 'Endpoint non trovato');
-          } else {
-            const timestamp = new Date().toISOString();
-            console.error(`[${timestamp}] ❌ ERRORE INVIO NOTIFICA FORZATA:`, err);
-          }
-        })
-    );
-    await Promise.all(promises);
-
-    const logTimestamp = new Date().toISOString();
-    console.log(`[${logTimestamp}] 🔄 STATO FORZATO AGGIORNATO`);
-    console.log(`   Famiglia: ${famiglia}`);
-    console.log(`   Stato: ${stato}`);
-    console.log(`   Destinatari: ${subs.length} subscription`);
-
-    res.status(200).json({ 
-      message: 'Stato forzato aggiornato con successo',
-      stato,
-      famiglia,
-      timestamp: mockData.timestamp
-    });
-  } catch (error) {
-    const errorTimestamp = new Date().toISOString();
-    console.error(`[${errorTimestamp}] ❌ ERRORE AGGIORNAMENTO STATO FORZATO:`, error);
-    res.status(500).json({ error: 'Errore interno del server' });
-  }
-});
-
 // Endpoint per rimuovere una subscription
 app.delete('/unsubscribe', async (req, res) => {
   try {
@@ -365,6 +279,11 @@ app.post('/sendNotification', async (req, res) => {
 const MQTT_BROKER = process.env.MQTT_BROKER_URL || 'wss://test.mosquitto.org:8081';
 const MQTT_TOPIC = process.env.MQTT_TOPIC || 'giardino/stato';
 
+// Variabile per memorizzare l'ultimo payload MQTT ricevuto
+let lastMqttPayload = null;
+// Variabile per tracciare se è il primo messaggio dopo la connessione
+let isFirstMessage = true;
+
 const mqttClient = mqtt.connect(MQTT_BROKER, {
   reconnectPeriod: 5000,
   connectTimeout: 30000
@@ -373,6 +292,8 @@ const mqttClient = mqtt.connect(MQTT_BROKER, {
 mqttClient.on('connect', () => {
   console.log('Connesso a MQTT broker');
   mqttClient.subscribe(MQTT_TOPIC);
+  // Reset del flag del primo messaggio quando ci riconnettiamo
+  isFirstMessage = true;
 });
 
 mqttClient.on('error', (error) => {
@@ -383,38 +304,22 @@ mqttClient.on('close', () => {
   console.log('Connessione MQTT chiusa');
 });
 
-// Variabile per memorizzare l'ultimo payload MQTT ricevuto
-let lastMqttPayload = null;
-
 mqttClient.on('message', async (topic, message) => {
   if (topic === MQTT_TOPIC) {
     try {
       const data = JSON.parse(message.toString());
       
-      // Verifica se questo stato è già stato registrato nel database
-      const ultimaPrenotazione = await Prenotazione.findOne({
-        famiglia: data.famiglia,
-        stato: data.stato
-      }).sort({ timestamp: -1 });
-      
-      // Se esiste già una prenotazione con lo stesso stato per la stessa famiglia
-      // e il timestamp è molto recente (entro 5 minuti), probabilmente è un duplicato
-      if (ultimaPrenotazione) {
-        const oraAttuale = new Date(data.timestamp);
-        const oraUltima = new Date(ultimaPrenotazione.timestamp);
-        const differenzaMinuti = Math.abs((oraAttuale - oraUltima) / (1000 * 60));
-        
-        if (differenzaMinuti < 5) {
-          const timestamp = new Date().toISOString();
-          console.log(`[${timestamp}] ⚠️ STATO DUPLICATO IGNORATO`);
-          console.log(`   Famiglia: ${data.famiglia}`);
-          console.log(`   Stato: ${data.stato}`);
-          console.log(`   Differenza: ${differenzaMinuti.toFixed(1)} minuti`);
-          return;
-        }
+      // Ignora il primo messaggio dopo la connessione (retained message)
+      if (isFirstMessage) {
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] ⏭️ PRIMO MESSAGGIO IGNORATO (retained message)`);
+        console.log(`   Stato giardino: ${data.stato}`);
+        console.log(`   Famiglia: ${data.famiglia}`);
+        isFirstMessage = false;
+        return;
       }
-
-      // Confronta il payload attuale con quello precedente (per evitare duplicati durante la sessione)
+      
+      // Confronta il payload attuale con quello precedente
       const currentPayload = JSON.stringify(data);
       if (lastMqttPayload === currentPayload) {
         // Se il payload è uguale al precedente, non inviare la notifica
