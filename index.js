@@ -5,6 +5,7 @@ import webpush from 'web-push';
 import mqtt from 'mqtt';
 import mongoose from 'mongoose';
 import Subscription from './subscription.model.js';
+import Prenotazione from './prenotazione.model.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -72,6 +73,215 @@ app.post('/subscribe', async (req, res) => {
   } catch (error) {
     const timestamp = new Date().toISOString();
     console.error(`[${timestamp}] ❌ ERRORE REGISTRAZIONE SUBSCRIPTION:`, error);
+    res.status(500).json({ error: 'Errore interno del server' });
+  }
+});
+
+// Endpoint per visualizzare il log delle prenotazioni
+app.get('/prenotazioni', async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      famiglia, 
+      stato, 
+      dataInizio, 
+      dataFine,
+      sort = 'timestamp' 
+    } = req.query;
+
+    // Costruisci il filtro
+    const filter = {};
+    if (famiglia) filter.famiglia = { $regex: famiglia, $options: 'i' };
+    if (stato) filter.stato = stato;
+    if (dataInizio || dataFine) {
+      filter.timestamp = {};
+      if (dataInizio) filter.timestamp.$gte = new Date(dataInizio);
+      if (dataFine) filter.timestamp.$lte = new Date(dataFine);
+    }
+
+    // Calcola skip per paginazione
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Esegui query con paginazione
+    const prenotazioni = await Prenotazione.find(filter)
+      .sort({ [sort]: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    // Conta totale documenti per paginazione
+    const total = await Prenotazione.countDocuments(filter);
+
+    // Calcola statistiche
+    const stats = await Prenotazione.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalePrenotazioni: { $sum: 1 },
+          totaleOccupato: {
+            $sum: { $cond: [{ $eq: ['$stato', 'occupato'] }, 1, 0] }
+          },
+          totaleLibero: {
+            $sum: { $cond: [{ $eq: ['$stato', 'libero'] }, 1, 0] }
+          },
+          durataMedia: { $avg: '$durata' }
+        }
+      }
+    ]);
+
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] 📊 LOG PRENOTAZIONI CONSULTATO`);
+    console.log(`   Filtri applicati:`, filter);
+    console.log(`   Risultati: ${prenotazioni.length}/${total}`);
+
+    res.json({
+      prenotazioni,
+      paginazione: {
+        pagina: parseInt(page),
+        limite: parseInt(limit),
+        totale: total,
+        pagine: Math.ceil(total / parseInt(limit))
+      },
+      statistiche: stats[0] || {
+        totalePrenotazioni: 0,
+        totaleOccupato: 0,
+        totaleLibero: 0,
+        durataMedia: 0
+      }
+    });
+  } catch (error) {
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ❌ ERRORE CONSULTAZIONE LOG PRENOTAZIONI:`, error);
+    res.status(500).json({ error: 'Errore interno del server' });
+  }
+});
+
+// Endpoint per ottenere statistiche delle prenotazioni
+app.get('/prenotazioni/stats', async (req, res) => {
+  try {
+    const { dataInizio, dataFine } = req.query;
+    
+    const filter = {};
+    if (dataInizio || dataFine) {
+      filter.timestamp = {};
+      if (dataInizio) filter.timestamp.$gte = new Date(dataInizio);
+      if (dataFine) filter.timestamp.$lte = new Date(dataFine);
+    }
+
+    const stats = await Prenotazione.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$timestamp" }
+          },
+          prenotazioni: { $sum: 1 },
+          occupato: {
+            $sum: { $cond: [{ $eq: ['$stato', 'occupato'] }, 1, 0] }
+          },
+          libero: {
+            $sum: { $cond: [{ $eq: ['$stato', 'libero'] }, 1, 0] }
+          }
+        }
+      },
+      { $sort: { _id: -1 } },
+      { $limit: 30 } // ultimi 30 giorni
+    ]);
+
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] 📈 STATISTICHE PRENOTAZIONI CONSULTATE`);
+
+    res.json({ stats });
+  } catch (error) {
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ❌ ERRORE STATISTICHE PRENOTAZIONI:`, error);
+    res.status(500).json({ error: 'Errore interno del server' });
+  }
+});
+
+// Endpoint per forzare l'aggiornamento dello stato (utile dopo riavvio)
+app.post('/forceStateUpdate', async (req, res) => {
+  try {
+    const { stato, famiglia, timestamp } = req.body;
+    
+    if (!stato || !famiglia) {
+      return res.status(400).json({ error: 'Stato e famiglia sono richiesti' });
+    }
+
+    // Resetta il payload precedente per forzare l'aggiornamento
+    lastMqttPayload = null;
+    
+    // Simula un messaggio MQTT
+    const mockData = {
+      stato,
+      famiglia,
+      timestamp: timestamp || new Date().toISOString()
+    };
+    
+    // Salva la prenotazione
+    let durata = null;
+    if (stato === 'libero') {
+      const ultimaOccupazione = await Prenotazione.findOne({
+        famiglia: famiglia,
+        stato: 'occupato'
+      }).sort({ timestamp: -1 });
+      
+      if (ultimaOccupazione) {
+        const oraAttuale = new Date(mockData.timestamp);
+        const oraOccupazione = new Date(ultimaOccupazione.timestamp);
+        durata = Math.round((oraAttuale - oraOccupazione) / (1000 * 60));
+      }
+    }
+
+    await Prenotazione.create({
+      timestamp: new Date(mockData.timestamp),
+      famiglia: famiglia,
+      stato: stato,
+      durata: durata
+    });
+
+    // Invia notifica
+    let title, body;
+    if (stato === 'occupato') {
+      title = '🚫 Giardino Occupato!';
+      body = `Il giardino è stato occupato da ${famiglia} alle ${new Date(mockData.timestamp).toLocaleTimeString('it-IT', { timeZone: 'Europe/Rome' })}`;
+    } else {
+      title = '✅ Giardino Libero!';
+      body = `Il giardino è stato liberato da ${famiglia} alle ${new Date(mockData.timestamp).toLocaleTimeString('it-IT', { timeZone: 'Europe/Rome' })}`;
+    }
+
+    const subs = await Subscription.find();
+    const promises = subs.map(sub => 
+      webpush.sendNotification(sub, JSON.stringify({ title, body }))
+        .catch(err => {
+          if (err.statusCode === 410) {
+            cleanInvalidSubscription(sub.endpoint, 410, 'Subscription scaduta (Gone)');
+          } else if (err.statusCode === 404) {
+            cleanInvalidSubscription(sub.endpoint, 404, 'Endpoint non trovato');
+          } else {
+            const timestamp = new Date().toISOString();
+            console.error(`[${timestamp}] ❌ ERRORE INVIO NOTIFICA FORZATA:`, err);
+          }
+        })
+    );
+    await Promise.all(promises);
+
+    const logTimestamp = new Date().toISOString();
+    console.log(`[${logTimestamp}] 🔄 STATO FORZATO AGGIORNATO`);
+    console.log(`   Famiglia: ${famiglia}`);
+    console.log(`   Stato: ${stato}`);
+    console.log(`   Destinatari: ${subs.length} subscription`);
+
+    res.status(200).json({ 
+      message: 'Stato forzato aggiornato con successo',
+      stato,
+      famiglia,
+      timestamp: mockData.timestamp
+    });
+  } catch (error) {
+    const errorTimestamp = new Date().toISOString();
+    console.error(`[${errorTimestamp}] ❌ ERRORE AGGIORNAMENTO STATO FORZATO:`, error);
     res.status(500).json({ error: 'Errore interno del server' });
   }
 });
@@ -180,7 +390,31 @@ mqttClient.on('message', async (topic, message) => {
   if (topic === MQTT_TOPIC) {
     try {
       const data = JSON.parse(message.toString());
-      // Confronta il payload attuale con quello precedente
+      
+      // Verifica se questo stato è già stato registrato nel database
+      const ultimaPrenotazione = await Prenotazione.findOne({
+        famiglia: data.famiglia,
+        stato: data.stato
+      }).sort({ timestamp: -1 });
+      
+      // Se esiste già una prenotazione con lo stesso stato per la stessa famiglia
+      // e il timestamp è molto recente (entro 5 minuti), probabilmente è un duplicato
+      if (ultimaPrenotazione) {
+        const oraAttuale = new Date(data.timestamp);
+        const oraUltima = new Date(ultimaPrenotazione.timestamp);
+        const differenzaMinuti = Math.abs((oraAttuale - oraUltima) / (1000 * 60));
+        
+        if (differenzaMinuti < 5) {
+          const timestamp = new Date().toISOString();
+          console.log(`[${timestamp}] ⚠️ STATO DUPLICATO IGNORATO`);
+          console.log(`   Famiglia: ${data.famiglia}`);
+          console.log(`   Stato: ${data.stato}`);
+          console.log(`   Differenza: ${differenzaMinuti.toFixed(1)} minuti`);
+          return;
+        }
+      }
+
+      // Confronta il payload attuale con quello precedente (per evitare duplicati durante la sessione)
       const currentPayload = JSON.stringify(data);
       if (lastMqttPayload === currentPayload) {
         // Se il payload è uguale al precedente, non inviare la notifica
@@ -188,6 +422,43 @@ mqttClient.on('message', async (topic, message) => {
       }
       // Aggiorna il payload precedente
       lastMqttPayload = currentPayload;
+
+      // Salva la prenotazione nel database
+      try {
+        let durata = null;
+        
+        // Se lo stato è 'libero', cerca l'ultima prenotazione 'occupato' della stessa famiglia
+        // per calcolare la durata
+        if (data.stato === 'libero') {
+          const ultimaOccupazione = await Prenotazione.findOne({
+            famiglia: data.famiglia,
+            stato: 'occupato'
+          }).sort({ timestamp: -1 });
+          
+          if (ultimaOccupazione) {
+            const oraAttuale = new Date(data.timestamp);
+            const oraOccupazione = new Date(ultimaOccupazione.timestamp);
+            durata = Math.round((oraAttuale - oraOccupazione) / (1000 * 60)); // durata in minuti
+          }
+        }
+
+        await Prenotazione.create({
+          timestamp: new Date(data.timestamp),
+          famiglia: data.famiglia,
+          stato: data.stato,
+          durata: durata
+        });
+
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] 💾 PRENOTAZIONE SALVATA`);
+        console.log(`   Famiglia: ${data.famiglia}`);
+        console.log(`   Stato: ${data.stato}`);
+        if (durata) console.log(`   Durata: ${durata} minuti`);
+      } catch (dbError) {
+        const timestamp = new Date().toISOString();
+        console.error(`[${timestamp}] ❌ ERRORE SALVATAGGIO PRENOTAZIONE:`, dbError);
+      }
+
       let title, body;
       if (data.stato === 'occupato') {
         title = '🚫 Giardino Occupato!';
